@@ -8,12 +8,16 @@ module Data.InvertibleGrammar.TH where
 import Control.Applicative
 #endif
 import Data.Foldable (toList)
-import Data.InvertibleGrammar
+import Data.InvertibleGrammar.Base
 import Data.Maybe
 import Data.Text (pack)
 import Language.Haskell.TH as TH
 import Data.Set (Set)
 import qualified Data.Set as S
+#if !MIN_VERSION_base(4,11,0)
+import Data.Semigroup ((<>))
+#endif
+
 
 {- | Build a prism and the corresponding grammar that will match on the
      given constructor and convert it to reverse sequence of :- stacks.
@@ -28,15 +32,16 @@ import qualified Data.Set as S
 
      will expand into
 
-     > fooGrammar = PartialIso "Foo"
+     > fooGrammar = PartialIso
      >   (\(c :- b :- a :- t) -> Foo a b c :- t)
      >   (\case { Foo a b c :- t -> Just $ c :- b :- a :- t; _ -> Nothing })
 
      Note the order of elements on the stack:
 
      > ghci> :t fooGrammar
-     > fooGrammar :: Grammar g (c :- (b :- (a :- t))) (FooBar a b c :- t)
+     > fooGrammar :: Grammar p (c :- (b :- (a :- t))) (FooBar a b c :- t)
 -}
+
 grammarFor :: Name -> ExpQ
 grammarFor constructorName = do
 #if defined(__GLASGOW_HASKELL__)
@@ -74,10 +79,10 @@ grammarFor constructorName = do
         [ Just $ TH.match gPat (normalB [e| Right ($gBody) |]) []
         , if single
           then Nothing
-          else Just $ TH.match wildP (normalB [e| Left (expected . pack $ $(stringE (show constructorName))) |]) []
+          else Just $ TH.match wildP (normalB [e| Left (expected $ "constructor " <> pack ( $(stringE (show constructorName))) ) |]) []
         ]
 
-  [e| PartialIso $(stringE (show constructorName)) $fFunc $gFunc |]
+  [e| PartialIso $fFunc $gFunc |]
 
 
 {- | Build prisms and corresponding grammars for all data constructors of given
@@ -95,7 +100,7 @@ match tyName = do
   names  <- concatMap (toList . constructorNames) <$> (extractConstructors =<< reify tyName)
   argTys <- mapM (\_ -> newName "a") names
   let grammars = map (\(con, arg) -> [e| $(varE arg) $(grammarFor con) |]) (zip names argTys)
-  lamE (map varP argTys) (foldr1 (\e1 e2 -> [e| $e1 :<>: $e2 |]) grammars)
+  lamE (map varP argTys) (foldr1 (\e1 e2 -> [e| $e1 <> $e2 |]) grammars)
   where
     extractConstructors :: Info -> Q [Con]
     extractConstructors (TyConI dataDef) =

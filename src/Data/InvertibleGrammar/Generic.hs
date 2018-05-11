@@ -1,20 +1,18 @@
-{-# LANGUAGE ConstraintKinds        #-}
+{-# LANGUAGE CPP                    #-}
 {-# LANGUAGE DataKinds              #-}
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE FlexibleInstances      #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs                  #-}
-{-# LANGUAGE InstanceSigs           #-}
-{-# LANGUAGE KindSignatures         #-}
 {-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE OverloadedStrings      #-}
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE RankNTypes             #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE TypeFamilies           #-}
 {-# LANGUAGE TypeOperators          #-}
-{-# LANGUAGE UndecidableInstances   #-}
 
 -- NB: UndecidableInstances needed for nested type family application. :-/
+{-# LANGUAGE UndecidableInstances   #-}
 
 module Data.InvertibleGrammar.Generic
   ( with
@@ -28,12 +26,15 @@ import Control.Applicative
 import Control.Category ((.))
 
 import Data.Functor.Identity
-import Data.InvertibleGrammar
+import Data.InvertibleGrammar.Base
 import Data.Monoid (First(..))
 import Data.Profunctor (Choice(..))
 import Data.Profunctor.Unsafe
 import Data.Tagged
 import Data.Text (pack)
+#if !MIN_VERSION_base(4,11,0)
+import Data.Semigroup ((<>))
+#endif
 
 import GHC.Generics
 
@@ -41,7 +42,7 @@ import GHC.Generics
 -- stacks. Works for types with one data constructor. For sum types use 'match'
 -- and 'Coproduct'.
 with
-  :: forall a b s t g c d f.
+  :: forall a b s t c d f p.
      ( Generic a
      , MkPrismList (Rep a)
      , MkStackPrism f
@@ -49,15 +50,14 @@ with
      , StackPrismLhs f t ~ b
      , Constructor c
      ) =>
-     (Grammar g b (a :- t) -> Grammar g s (a :- t))
-  -> Grammar g s (a :- t)
+     (Grammar p b (a :- t) -> Grammar p s (a :- t))
+  -> Grammar p s (a :- t)
 with g =
   let PrismList (P prism) = mkRevPrismList
       name = conName (undefined :: m c f e)
   in g (PartialIso
-         name
          (fwd prism)
-         (maybe (Left $ expected (pack name)) Right . bkwd prism))
+         (maybe (Left $ expected ("constructor " <> pack name)) Right . bkwd prism))
 
 -- | Combine all grammars provided in 'Coproduct' list into a single grammar.
 match
@@ -66,21 +66,21 @@ match
      , Match (Rep a) bs t
      , bs ~ Coll (Rep a) t
      ) =>
-     Coproduct g s bs a t
-  -> Grammar g s (a :- t)
+     Coproduct p s bs a t
+  -> Grammar p s (a :- t)
 match = fst . match' mkRevPrismList
 
 -- | Heterogenous list of grammars, each one matches a data constructor of type
 -- @a@. 'With' is used to provide a data constructor/stack isomorphism to a
 -- grammar working on stacks. 'End' ends the list of matches.
-data Coproduct g s bs a t where
+data Coproduct p s bs a t where
 
   With
-    :: (Grammar g b (a :- t) -> Grammar g s (a :- t))
-    -> Coproduct g s bs a t
-    -> Coproduct g s (b ': bs) a t
+    :: (Grammar p b (a :- t) -> Grammar p s (a :- t))
+    -> Coproduct p s bs a t
+    -> Coproduct p s (b ': bs) a t
 
-  End :: Coproduct g s '[] a t
+  End :: Coproduct p s '[] a t
 
 ----------------------------------------------------------------------
 -- Machinery
@@ -90,20 +90,20 @@ type family (:++) (as :: [k]) (bs :: [k]) :: [k] where
   (:++) '[] bs = bs
 
 type family Coll (f :: * -> *) (t :: *) :: [*] where
-  Coll (M1 D c f) t = Coll f t
   Coll (f :+: g)  t = Coll f t :++ Coll g t
+  Coll (M1 D c f) t = Coll f t
   Coll (M1 C c f) t = '[StackPrismLhs f t]
 
 type family Trav (t :: * -> *) (l :: [*]) :: [*] where
-  Trav (M1 D c f) lst = Trav f lst
   Trav (f :+: g) lst = Trav g (Trav f lst)
+  Trav (M1 D c f) lst = Trav f lst
   Trav (M1 C c f) (l ': ls) = ls
 
 class Match (f :: * -> *) bs t where
   match' :: PrismList f a
-         -> Coproduct g s bs a t
-         -> ( Grammar g s (a :- t)
-            , Coproduct g s (Trav f bs) a t
+         -> Coproduct p s bs a t
+         -> ( Grammar p s (a :- t)
+            , Coproduct p s (Trav f bs) a t
             )
 
 instance (Match f bs t, Trav f bs ~ '[]) => Match (M1 D c f) bs t where
@@ -116,14 +116,14 @@ instance
   match' (p :& q) lst =
     let (gp, rest)  = match' p lst
         (qp, rest') = match' q rest
-    in (gp :<>: qp, rest')
+    in (gp <> qp, rest')
 
 instance (StackPrismLhs f t ~ b, Constructor c) => Match (M1 C c f) (b ': bs) t where
   match' (P prism) (With g rest) =
     let name = conName (undefined :: m c f e)
         p = fwd prism
-        q = maybe (Left $ expected (pack name)) Right . bkwd prism
-    in (g $ PartialIso name p q, rest)
+        q = maybe (Left $ expected ("constructor " <> pack name)) Right . bkwd prism
+    in (g $ PartialIso p q, rest)
 
 -- NB. The following machinery is heavily based on
 -- https://github.com/MedeaMelana/stack-prism/blob/master/Data/StackPrism/Generic.hs
